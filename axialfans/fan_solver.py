@@ -203,7 +203,7 @@ class MultistageFanSolver:
 
             # Compute stage parameters
             self.Psi[n] = self.sigma[n] * self.omega[n]
-            self.Xi[n] = -self.vax[n-1] * math.tan(self.beta[n])
+            self.Xi[n] = -self.sigma[n] * self.vax[n-1] * math.tan(self.beta[n])
 
             # Determine Direction Change
             if n > 1: 
