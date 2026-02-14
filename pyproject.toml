@@ -1,15 +1,21 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=65", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "axialfans"
-version = "0.1.0"
+version = "1.0.1"
 description = "Analytical solver for multistage ducted axial fans."
 authors = [
-  { name="Sean Wang", email="you@example.com" }
+  { name = "Sean H. Wang", email = "seanwangpiano@gmail.com" }
 ]
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.9"
-dependencies = ["numpy>=1.23"]
+dependencies = [
+    "numpy>=1.23"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/sean-h-wang/axialfans"
+"Documentation" = "https://github.com/sean-h-wang/axialfans#readme"
