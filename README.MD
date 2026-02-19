@@ -126,6 +126,20 @@ Uncertainty quantification with 10,000 Monte Carlo samples shows 99.8% convergen
 
 ---
 
+
+## Important Note
+
+This solver computes the **post-stage thermodynamic state** (temperature, pressure, density, 
+velocity) at each stage exit. Downstream pressure recovery and outlet geometry are intentionally 
+out of scope.
+
+This design choice makes the solver general-purpose: outputs can be fed directly into 
+nozzle design, diffuser analysis, combustion chamber sizing, or any other downstream 
+component model without assumptions about the application. Users retain full control 
+over how stage-exit conditions are utilized.
+
+---
+
 ## Documentation
 
 Full API documentation available in code docstrings. Quick reference:
@@ -155,14 +169,14 @@ If you use this software in your research, please cite:
   author={Wang, Sean},
   year={2026},
   url={https://github.com/sean-h-wang/axialfans},
-  version={1.0.0}
+  version={1.0.2}
 }
 ```
 
 Associated paper:
 ```bibtex
 @article{wang2026analytical,
-  title={Analytical Solver for Multistage Axial Turbomachinery with Variable Area and Counter-Rotation},
+  title={Unified Analytical Solver for Multistage Axial Turbomachinery},
   author={Wang, Sean},
   journal={AIAA Journal},
   year={2026},
@@ -195,5 +209,3 @@ For bug reports, include:
 **Sean H. Wang**
 - Email: [seanwangpiano@gmail.com](mailto:seanwangpiano@gmail.com)
 - GitHub: [@sean-h-wang](https://github.com/sean-h-wang)
-
-Developed as part of hypersonic propulsion research.

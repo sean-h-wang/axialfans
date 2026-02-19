@@ -7,7 +7,7 @@ solver = MultistageFanSolver(
     N=2,
     direction=[1, -1],      # Opposite rotations
     sigma=0.9,
-    omega=[1800, 1800],     # Same speed, opposite directions
+    omega=[1600, 1600],     # Same speed, opposite directions
     beta=45,                # Same blade angle
     rp=0.25,
     rm=0.18,
@@ -45,3 +45,5 @@ print(f"Stage 2 PR: {solver.P[2]/solver.P[1]:.3f}")
 print(f"Overall PR: {solver.P[2]/solver.P[0]:.3f} (very high!)")
 print(f"\nBoth stages contribute to compression.")
 print(f"Counter-rotation reduces exit swirl but doesn't eliminate it.")
+
+print(f"TR: {solver.T[2]/solver.T[0]:.3f}")
