@@ -1,5 +1,5 @@
 """Variable area (converging duct) example."""
-from axialfans.fan_solver import MultistageFanSolver
+from archive.old_fan_solver import MultistageFanSolver
 
 # Area decreases between stages
 solver = MultistageFanSolver(

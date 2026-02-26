@@ -1,5 +1,5 @@
 """Multi-spool compressor (LP + stator + HP)."""
-from axialfans.fan_solver import MultistageFanSolver
+from archive.old_fan_solver import MultistageFanSolver
 
 # Three LP stages, one stator, two HP stages
 solver = MultistageFanSolver(

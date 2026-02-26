@@ -1,6 +1,6 @@
 """Monte Carlo uncertainty quantification example."""
 import numpy as np
-from axialfans.fan_solver import MultistageFanSolver
+from archive.old_fan_solver import MultistageFanSolver
 import time
 
 

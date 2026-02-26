@@ -1,309 +1,428 @@
+"""
+solver.py — Quasi-1D Pointwise Multistage Axial Turbomachinery Solver
+======================================================================
+Architecture
+------------
+- Each blade row is solved pointwise at M independent radial stations.
+- Newton-Raphson (analytical Jacobian + line search) at each station.
+- Area averaging applied AFTER the nonlinear solve (correct Jensen order).
+- State averaging is area-weighted — valid even when vax = 0.
+- Sequential stage coupling: stage n takes stage n-1 output as fixed input.
+  No outer loop needed — the problem is causal (inlet-driven).
+
+Inputs
+------
+sigma, omega, rp, rm, eta : scalar or 1-D length-N array (one per stage)
+beta                       : scalar | 1-D length-N | 1-D length-M (N=1) | 2-D (N x M)
+
+Slip factor sigma
+-----------------
+Pass a scalar or per-stage array. The solver does NOT compute sigma
+internally — supply it from your chosen model (Qiu, Carter, Wiesner, etc.)
+before calling solve(). For Qiu-consistent sigma use Picard iteration
+externally (see test_solver.py).
+"""
+
 import numpy as np
 import math
-from pathlib import Path
 from typing import Union, Sequence
-from axialfans.newton_raphson import NewtonRaphsonSolver
+
+
+# ── Physical constants (defaults) ─────────────────────────────────────────────
+GAMMA_DEFAULT = 1.4
+R_DEFAULT     = 287.05   # J/(kg·K)
+CP_DEFAULT    = GAMMA_DEFAULT * R_DEFAULT / (GAMMA_DEFAULT - 1)  # ~1004.7
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  STATE
+# ══════════════════════════════════════════════════════════════════════════════
+
+class State:
+    """
+    Holds the full radial distribution of flow properties at one axial station.
+
+    Parameters
+    ----------
+    n   : stage index (0 = inlet)
+    M   : number of radial stations
+    rm  : hub radius [m]
+    rp  : tip radius [m]
+    T, P, vax, rho, vtheta : arrays of length M (or scalars → broadcast)
+    """
+
+    def __init__(self, n, M, rm, rp, T, P, vax, rho, vtheta):
+        self.n  = int(n)
+        self.M  = int(M)
+        self.rm = float(rm)
+        self.rp = float(rp)
+        self.r  = np.linspace(rm, rp, M)
+
+        def _to_arr(x):
+            x = np.asarray(x, dtype=float).ravel()
+            if x.size == 1:
+                return np.full(M, x[0])
+            if x.size == M:
+                return x.copy()
+            raise ValueError(f"Expected scalar or length-{M} array, got {x.size}")
+
+        self.T      = _to_arr(T)
+        self.P      = _to_arr(P)
+        self.vax    = _to_arr(vax)
+        self.rho    = _to_arr(rho)
+        self.vtheta = _to_arr(vtheta)
+
+        # Precompute annular area weights  (trapezoidal, shape M-1)
+        r      = self.r
+        dr     = np.diff(r)
+        r_mid  = 0.5 * (r[1:] + r[:-1])
+        self.dA       = 2.0 * np.pi * r_mid * dr   # annular ring areas
+        self.A_total  = float(np.sum(self.dA))
+
+        self._compute_averages()
+
+    # ── Area-weighted average (works even when vax = 0) ──────────────────────
+    def _area_avg(self, var):
+        """Trapezoid-rule area average of a radial array."""
+        mid = 0.5 * (var[1:] + var[:-1])
+        return float(np.sum(mid * self.dA) / self.A_total)
+
+    def _compute_averages(self):
+        self.T_avg      = self._area_avg(self.T)
+        self.P_avg      = self._area_avg(self.P)
+        self.vax_avg    = self._area_avg(self.vax)
+        self.rho_avg    = self._area_avg(self.rho)
+        self.vtheta_avg = self._area_avg(self.vtheta)
+
+        # Mass flow — still useful as a diagnostic even if vax can be zero
+        mid_flux      = 0.5 * ((self.rho * self.vax)[1:] + (self.rho * self.vax)[:-1])
+        self.mdot     = float(np.sum(mid_flux * self.dA))
+
+    def summary(self):
+        return {
+            "n":           self.n,
+            "P_avg [Pa]":  self.P_avg,
+            "T_avg [K]":   self.T_avg,
+            "vax_avg":     self.vax_avg,
+            "rho_avg":     self.rho_avg,
+            "vtheta_avg":  self.vtheta_avg,
+            "mdot [kg/s]": self.mdot,
+        }
+
+    def __repr__(self):
+        s = self.summary()
+        return (f"State(n={s['n']}, P={s['P_avg [Pa]']:.1f} Pa, "
+                f"T={s['T_avg [K]']:.2f} K, vax={s['vax_avg']:.2f} m/s)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  POINTWISE NEWTON-RAPHSON STREAMTUBE SOLVER
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _solve_radial_station(r, work_local, vt_exit, vt_in,
+                      T_prev, P_prev, vax_prev, rho_prev,
+                      eta, Rgas, cp, gamma, max_iter=1000):
+    """
+    Solve 4 equations at a single radial station r using NewtonRaphsonSolver.
+
+    Unknowns:  x = [T_n, vax_n, P_n, rho_n]
+
+    Equations (UNINTEGRATED / pointwise):
+      R1 — energy:   work + 0.5*vax_prev^2 + 0.5*vt_in^2
+                     = cp*(T_n - T_prev) + 0.5*vax_n^2 + 0.5*vt_exit^2
+      R2 — isentropic + eta:
+                     P_n = P_prev * [1 + eta*(T_n - T_prev)/T_prev]^(g/(g-1))
+      R3 — ideal gas:  rho_n = P_n / (R * T_n)
+      R4 — continuity: rho_n * vax_n = rho_prev * vax_prev
+    """
+    from axialfans.newton_raphson import NewtonRaphsonSolver
+
+    exp = gamma / (gamma - 1.0)
+    E   = work_local + 0.5 * vax_prev**2 + 0.5 * vt_in**2
+
+    def residual(x):
+        T_n, vax_n, P_n, rho_n = x
+        ratio = max(1.0 + eta * (T_n - T_prev) / T_prev, 1e-10)
+        return np.array([
+            E - cp * (T_n - T_prev) - 0.5 * vax_n**2 - 0.5 * vt_exit**2,        # R1 energy
+            P_n - P_prev * ratio**exp,                                          # R2 isentropic
+            rho_n - P_n / (Rgas * T_n),                                         # R3 ideal gas
+            rho_n * vax_n - rho_prev * vax_prev,                                # R4 continuity
+        ])
+
+    def jacobian(x):
+        T_n, vax_n, P_n, rho_n = x
+        ratio = max(1.0 + eta * (T_n - T_prev) / T_prev, 1e-10)
+        return np.array([
+            [-cp,                                           -vax_n,              0.0,              0.0   ],  # dR1
+            [-P_prev * exp * (eta/T_prev) * ratio**(exp-1), 0.0,                1.0,              0.0   ],  # dR2
+            [ P_n / (Rgas * T_n**2),                        0.0,   -1.0/(Rgas*T_n),              1.0   ],  # dR3
+            [ 0.0,                                          rho_n,               0.0,            vax_n  ],  # dR4
+        ])
+
+    # Initial guess
+    T0   = T_prev * 1.05
+    P0   = P_prev * 1.10
+    rho0 = P0 / (Rgas * T0)
+    vax0 = (rho_prev * vax_prev / rho0) if abs(rho_prev * vax_prev) > 1e-12 else vax_prev
+
+    solver = NewtonRaphsonSolver(residual, jacobian, max_iter=max_iter, tol=1e-8)
+    return solver.solve(np.array([T0, vax0, P0, rho0]))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MULTISTAGE SOLVER
+# ══════════════════════════════════════════════════════════════════════════════
 
 class MultistageFanSolver:
     """
-    Analytical solver for arbitrary turbomachinery cascades with variable area.
-    
-    Solves sequences of rotating/stationary axial stages (rotors, stators, 
-    counter-rotating) using Newton-Raphson on coupled thermodynamic equations.
-    
-    Indexing Convention
-    -------------------
-    State arrays indexed 0 → N:
-        - Index 0: inlet conditions
-        - Index n: exit of stage n
-    
-    Stage parameters (Psi, Xi) use UNSIGNED values in local coordinates:
-        Psi[n] = sigma[n] * omega[n]  (always positive)
-        Xi[n] = -v_ax,inlet * tan(beta[n])
-    
-    Direction array handles rotation sense:
-        direction[n] = +1 (CCW) or -1 (CW/mirror frame)
-        Coordinate transforms occur at interfaces when direction changes
-    
-    Parameters
-    ----------
-    N : int
-        Number of stages
-    direction : array_like, shape (N,)
-        Rotation direction: +1 (CCW) or -1 (CW). Example: [1, -1] for rotor-stator
-    sigma : float or array_like, shape (N,)
-        Slip factor, typically 0.85-0.95
-    omega : float or array_like, shape (N,)
-        Angular velocity [rad/s], UNSIGNED. Use 0 for stators
-    beta : float or array_like, shape (N,)
-        Blade angle [degrees], UNSIGNED, typically 20-70°
-    rp, rm : float or array_like, shape (N,)
-        Outer and inner radius [m]. Must have rp > rm
-    eta : float or array_like, shape (N,)
-        Isentropic efficiency, typically 0.75-0.92
-    R : float
-        Gas constant [J/(kg·K)]. Air: 287.053
-    cp : float
-        Specific heat [J/(kg·K)]. Air: 1005
-    gamma : float, default=1.4
-        Ratio of specific heats
-    
-    Attributes
-    ----------
-    T, P, vax, rho : ndarray, shape (N+1,)
-        Temperature [K], pressure [Pa], axial velocity [m/s], density [kg/m³]
-        at each station. Index n = exit of stage n.
-    Psi, Xi : ndarray, shape (N+1,)
-        Swirl parameters in local frame (always positive output convention)
-    
-    Examples
-    --------
-    Rotor-stator pair:
-    >>> solver = MultistageFanSolver(
-    ...     N=2, direction=[1, -1], omega=[1800, 0], beta=[65, 20],
-    ...     sigma=0.9, rp=0.267, rm=0.184, eta=0.877, R=287, cp=1005)
-    >>> solver.solve(T0=288, vax0=18, P0=101325, rho0=1.225)
-    >>> print(f"PR: {solver.P[-1]/solver.P[0]:.2f}")
-    
-    Notes
-    -----
-    - Inviscid actuator disk model, valid for Re > 10^6
-    - ~333 solves/sec enables real-time Monte Carlo (10k samples in 30s)
-    - Area changes handled via mass flux conservation
-    - See Wang (2026, submitted) for validation and regime boundaries
-    """
+    Pointwise quasi-1D multistage axial fan/compressor solver.
 
-    MAX_ITER = 60000
-    TOL = 1e-8
-    ALPHA = 0.5
+    Stage indexing
+    --------------
+    Internal arrays are length N+1.  Index 0 = inlet (no blade row).
+    Indices 1..N correspond to user-supplied blade rows.
+
+    beta handling
+    -------------
+    If beta is supplied as a scalar or 1-D length-N array → uniform across span.
+    If beta is 2-D (N × M) → full spanwise twist specified by user.
+    If beta_twist (d_beta_dm in 1/m) is also supplied, it is applied on top of
+    the tip beta to generate beta(r) = beta_tip + d_beta_dm * (r_tip - r).
+    """
 
     def __init__(self,
                  N: int,
+                 M: int,
                  direction: Sequence[int],
-                 sigma: Union[float, Sequence[float]],
-                 omega: Union[float, Sequence[float]],
-                 beta: Union[float, Sequence[float]],  # degrees
-                 rp: Union[float, Sequence[float]],
-                 rm: Union[float, Sequence[float]],
-                 eta: Union[float, Sequence[float]],
-                 R: float,
-                 cp: float,
-                 gamma: float = 1.4):
+                 sigma:  Union[float, Sequence[float]],
+                 omega:  Union[float, Sequence[float]],
+                 beta:   Union[float, Sequence[float], Sequence[Sequence[float]]],
+                 rp:     Union[float, Sequence[float]],
+                 rm:     Union[float, Sequence[float]],
+                 eta:    Union[float, Sequence[float]],
+                 R:      float = R_DEFAULT,
+                 cp:     float = CP_DEFAULT,
+                 gamma:  float = GAMMA_DEFAULT,
+):
         """
-        Initialize the multistage fan solver.
-
-        Args:
-            N: Number of stages
-            direction: Array of length N; 1 = CCW, -1 = CW
-            sigma: Slip factor (scalar or array length N)
-            omega: Blade angular speed (scalar or array length N, unsigned)
-            beta: Blade angle in degrees (scalar or array length N)
-            rp: Outer radius (scalar or array length N)
-            rm: Inner radius (scalar or array length N)
-            eta: Stage efficiency factor (scalar or array length N)
-            R: Gas constant
-            cp: Specific heat at constant pressure
-            gamma: Ratio of specific heats
+        Parameters
+        ----------
+        N         : number of blade rows
+        M         : radial stations per stage
+        direction : length-N array of +1 / -1
+        sigma     : slip factor(s)
+        omega     : angular velocity [rad/s]
+        beta      : blade exit angle(s) [deg], measured from axial
+        rp, rm    : tip / hub radii [m]
+        eta       : isentropic efficiency
+        R, cp     : gas constants
+        gamma     : ratio of specific heats
+        beta : scalar / 1-D length-N / 1-D length-M (N=1) / 2-D (N x M)
+                Blade angle(s) in degrees, positive from axial. Pass
+                np.linspace(beta_hub, beta_tip, M) for a twisted blade.
         """
-        self.N = N
-
-        # --- Helper: Expand scalar or array to 1-indexed array ---
-        def expand_param(param, name):
-            arr = np.zeros(N + 1)
-            if np.isscalar(param):
-                arr[1:] = param
-            else:
-                param = np.asarray(param, dtype=float)
-                if len(param) != N:
-                    raise ValueError(f"{name} must be scalar or length N")
-                arr[1:] = param
-            return arr
-
-        # --- Direction validation ---
-        direction = np.asarray(direction, dtype=int)
-        if len(direction) != N:
-            raise ValueError("direction array length must equal N")
-        if not np.all(np.isin(direction, [-1, 1])):
-            raise ValueError("direction entries must be 1 (CCW) or -1 (CW)")
-        self.direction = np.zeros(N + 1, dtype=int)
-        self.direction[1:] = direction
-
-        # --- Stage parameters ---
-        self.sigma = expand_param(sigma, "sigma")
-        self.omega = expand_param(omega, "omega")  # UNSIGNED
-        self.beta = np.deg2rad(expand_param(beta, "beta"))  # convert to radians
-        self.rp = expand_param(rp, "rp")
-        self.rm = expand_param(rm, "rm")
-        if not np.all(self.rp[1:] > self.rm[1:]):
-            raise ValueError("Each rp[i] must be greater than rm[i]")
-        self.eta = expand_param(eta, "eta")
-
-        # --- Precompute radial constants ---
-        self.Y2 = self.rp**2 - self.rm**2
-        self.Y3 = self.rp**3 - self.rm**3
-        self.Y4 = self.rp**4 - self.rm**4
-        self.A = self.Y2 * math.pi
-
-        # --- Gas properties ---
-        self.R = float(R)
-        self.cp = float(cp)
+        self.N     = int(N)
+        self.M     = int(M)
+        self.R     = float(R)
+        self.cp    = float(cp)
         self.gamma = float(gamma)
 
-        # --- State variables (0 → N) ---
-        self.T = np.zeros(N + 1)
-        self.vax = np.zeros(N + 1)
-        self.P = np.zeros(N + 1)
-        self.rho = np.zeros(N + 1)
-        self.Psi = np.zeros(N + 1)
-        self.Xi = np.zeros(N + 1)
+        # Expand all scalar/1D inputs to length N+1
+        self.sigma  = self._expand1d(sigma, 'sigma')
+        self.omega  = self._expand1d(omega,  "omega")
+        self.rp     = self._expand1d(rp,     "rp")
+        self.rm     = self._expand1d(rm,     "rm")
+        self.eta    = self._expand1d(eta,    "eta")
 
-        # Internal logger
+        # Direction
+        direction = np.array(direction, dtype=int)
+        if direction.size != N:
+            raise ValueError(f"direction must have length N={N}")
+        if not np.all(np.isin(direction, [-1, 1])):
+            raise ValueError("direction entries must be +1 or -1")
+        # Pad with 0 at index 0 (inlet — not used)
+        self.direction = np.concatenate([[0], direction])
+
+        # Beta — 2D array (N+1) × M  [radians, positive]
+        self.beta = self._expand2d(beta, 'beta', deg2rad=True)
+
+        # Geometry validation
+        bad = np.where(self.rp[1:] <= self.rm[1:])[0] + 1
+        if len(bad):
+            raise ValueError(f"rp must be > rm at stage(s): {bad.tolist()}")
+
+        self.states: list[State] = []
         self._verbose = False
 
-    def _log(self, msg: str):
-        """Internal logger controlled by verbose flag."""
+    # ── Input expansion helpers ───────────────────────────────────────────────
+
+    def _expand1d(self, x, name):
+        """
+        Expand into length-(N+1) array, index 0 unused.
+        Accepts: scalar  |  1-D length-N
+        """
+        x = np.asarray(x, dtype=float).ravel()
+        out = np.zeros(self.N + 1, dtype=float)
+        if x.size == 1:
+            out[1:] = x[0]
+        elif x.size == self.N:
+            out[1:] = x
+        else:
+            raise ValueError(
+                f"{name} must be scalar or length-{self.N} array, got {x.size}"
+            )
+        return out
+
+    def _expand2d(self, x, name, deg2rad=False):
+        """
+        Expand into (N+1) x M array, row 0 unused.
+        Accepts:
+          scalar            -> broadcast to all stages and radii
+          1-D length N      -> one value per stage, broadcast across span
+          1-D length M      -> full spanwise profile (only valid when N=1)
+          2-D (N x M)       -> full per-stage spanwise profile
+        If deg2rad=True, converts degrees → radians after expansion.
+        """
+        N, M = self.N, self.M
+        x   = np.asarray(x, dtype=float)
+        out = np.zeros((N + 1, M), dtype=float)
+
+        if x.ndim == 2:
+            if x.shape != (N, M):
+                raise ValueError(
+                    f"{name} 2D must be shape ({N},{M}), got {x.shape}"
+                )
+            out[1:, :] = x
+
+        else:
+            x = x.ravel()
+            if x.size == 1:
+                out[1:, :] = x[0]
+            elif x.size == N:
+                out[1:, :] = x[:, None]
+            elif x.size == M and N == 1:
+                out[1, :] = x
+            else:
+                raise ValueError(
+                    f"{name} must be scalar, length-{N} (per stage), "
+                    f"length-{M} (spanwise, N=1 only), or shape ({N},{M}). "
+                    f"Got {x.shape}."
+                )
+
+        if deg2rad:
+            out = np.deg2rad(out)
+        return out
+
+    # ── Logging ───────────────────────────────────────────────────────────────
+
+    def _log(self, msg):
         if self._verbose:
             print(msg)
 
-    def solve(self, T0: float, vax0: float, P0: float, rho0: float,
-              Psi0: float = 0, Xi0: float = 0, verbose: bool = False):
-        """
-        Solve the multistage fan problem.
+    # ── Main solve ────────────────────────────────────────────────────────────
 
-        Args:
-            T0: Inlet temperature
-            vax0: Inlet axial velocity
-            P0: Inlet pressure
-            rho0: Inlet density
-            Psi0: Optional initial Psi
-            Xi0: Optional initial Xi
-            verbose: Print progress
+    def solve(self, inlet_state: State, verbose: bool = False) -> list[State]:
         """
+        Solve all N stages sequentially.
+
+        Parameters
+        ----------
+        inlet_state : State object with n=0 and matching M, rm, rp
+
+        Returns
+        -------
+        List of State objects [inlet, stage1, stage2, ...]
+        """
+        # Validate inlet
+        if inlet_state.n != 0:
+            raise ValueError("inlet_state.n must be 0")
+        if inlet_state.M != self.M:
+            raise ValueError("inlet_state.M must match solver M")
+
         self._verbose = verbose
+        self.states   = [inlet_state]
 
-        # --- Set inlet (stage 0) ---
-        self.T[0], self.vax[0], self.P[0], self.rho[0] = T0, vax0, P0, rho0
-        self.Psi[0], self.Xi[0] = Psi0, Xi0
-
-        self._log("="*60)
-        self._log(f"Starting solver for N={self.N} stages")
-        self._log(f"INITIAL VALUES: T={self.T[0]:.2f} K, P={self.P[0]/1000:.2f} kPa, "
-                      f"vax={self.vax[0]:.2f} m/s, rho={self.rho[0]:.4f} kg/m^3")
+        self._log("=" * 60)
+        self._log(f"Pointwise solver: N={self.N} stages, M={self.M} stations")
 
         for n in range(1, self.N + 1):
-            
-            if n > 1:
-                old_vax_nm1 = self.vax[n-1]
-                self.vax[n-1] = old_vax_nm1 * self.A[n-1] / self.A[n] # account for area change
-                if not np.isclose(self.A[n-1], self.A[n]):
-                    self._log(
-                        f"Area change: {self.A[n-1]:.3f} → {self.A[n]:.3f}, "
-                        f"input axial velocity for fan {n} = {self.vax[n-1]:.3f}"
-                    )
+            prev  = self.states[n - 1]
+            r_n   = np.linspace(self.rm[n], self.rp[n], self.M)
 
-            # Compute stage parameters
-            self.Psi[n] = self.sigma[n] * self.omega[n]
-            self.Xi[n] = -self.sigma[n] * self.vax[n-1] * math.tan(self.beta[n])
+            # Output arrays
+            T_n   = np.zeros(self.M)
+            vax_n = np.zeros(self.M)
+            P_n   = np.zeros(self.M)
+            rho_n = np.zeros(self.M)
+            vt_n  = np.zeros(self.M)
 
-            # Determine Direction Change
-            if n > 1: 
-                if self.direction[n] != self.direction[n-1]:
-                    self._log(f"Direction Change from {self.direction[n-1]} to {self.direction[n]} at stage {n}!") 
-                    self.Psi[n-1] *= -1
-                    self.Xi[n-1] *= -1
-            
-            # Solve stage n using Newton-Raphson
-            sol = self._solve_stage(n)
-            self.T[n], self.vax[n], self.P[n], self.rho[n] = sol
+            # Same radial grid across all stages — no interpolation needed
+            T_prev   = prev.T.copy()
+            P_prev   = prev.P.copy()
+            vax_prev = prev.vax.copy()
+            rho_prev = prev.rho.copy()
+            vt_prev  = prev.vtheta.copy()
 
-            if n > 1: 
-                if self.direction[n] != self.direction[n-1]:
-                    # Change Psi[n-1] and Xi[n-1] back to original values.
-                    self.Psi[n-1] *= -1
-                    self.Xi[n-1] *= -1
-            
-            if n > 1:
-                self.vax[n-1] = old_vax_nm1 # Undo vax change.
+            # Variable area: temporarily scale vax using incompressible continuity
+            # vax_scaled = vax_prev * (A_prev / A_curr)
+            # Restored automatically — vax_prev is a local copy
+            A_prev = prev.A_total
+            A_curr = float(np.pi * (self.rp[n]**2 - self.rm[n]**2))
+            if not np.isclose(A_prev, A_curr):
+                vax_prev = vax_prev * (A_prev / A_curr)
 
-            # Log stage
-            self._log(f"Stage {n}: T={self.T[n]:.2f} K, P={self.P[n]/1000:.2f} kPa, "
-                      f"vax={self.vax[n]:.2f} m/s, rho={self.rho[n]:.4f} kg/m^3")
+            # Direction flip for counter-rotating stages
+            if n > 1 and self.direction[n] != self.direction[n - 1]:
+                vt_prev = -vt_prev
 
-        self._log("Solver completed.")
-        self._verbose = False
+            # ── Pointwise solve at each radial station ────────────────────
+            sigma_n = self.sigma[n]   # slip factor for this stage (user-supplied)
 
-    def _solve_stage(self, n: int) -> np.ndarray:
-        """
-        Solve a single stage using Newton-Raphson.
+            for m in range(self.M):
+                r      = r_n[m]
+                beta_m = self.beta[n, m]   # [radians]
 
-        Returns:
-            np.ndarray: [T_n, vax_n, P_n, rho_n]
-        """
-        # Precompute E_CONST
-        E_CONST = (- self.omega[n] * self.Psi[n-1] * self.Y4[n] / 4
-                   - self.omega[n] * self.Xi[n-1] * self.Y3[n] / 3
-                   + self.sigma[n] * self.omega[n]**2 * self.Y4[n] / 4
-                   - self.sigma[n] * self.omega[n] * math.tan(self.beta[n]) * self.vax[n-1] * self.Y3[n] / 3
-                   + 0.25 * self.vax[n-1]**2 * self.Y2[n]
-                   + 0.125 * self.Psi[n-1]**2 * self.Y4[n]
-                   + (1/3) * self.Psi[n-1] * self.Xi[n-1] * self.Y3[n]
-                   + 0.25 * self.Xi[n-1]**2 * self.Y2[n])
+                # Exit tangential velocity from velocity triangle
+                vt_exit    = sigma_n * (self.omega[n] * r - vax_prev[m] * math.tan(beta_m))
+                vt_n[m]    = vt_exit
+                work_local = self.omega[n] * r * (vt_exit - vt_prev[m])
 
-        def residual(x):
-            T, vax, P, rho = x
-            R1 = (E_CONST
-                  - 0.5 * self.cp * (T - self.T[n-1]) * self.Y2[n]
-                  - 0.25 * vax**2 * self.Y2[n]
-                  - 0.125 * self.Psi[n]**2 * self.Y4[n]
-                  - (1/3) * self.Psi[n] * self.Xi[n] * self.Y3[n]
-                  - 0.25 * self.Xi[n]**2 * self.Y2[n])
-            R2 = P - self.P[n-1] * (1 + self.eta[n] * (T - self.T[n-1]) / self.T[n-1])**(self.gamma / (self.gamma - 1))
-            R3 = rho - P / (self.R * T)
-            R4 = rho * vax - self.rho[n-1] * self.vax[n-1]
-            return np.array([R1, R2, R3, R4])
+                sol = _solve_radial_station(
+                    r          = r,
+                    work_local = work_local,
+                    vt_exit    = vt_exit,
+                    vt_in      = vt_prev[m],
+                    T_prev     = T_prev[m],
+                    P_prev     = P_prev[m],
+                    vax_prev   = vax_prev[m],
+                    rho_prev   = rho_prev[m],
+                    eta        = self.eta[n],
+                    Rgas       = self.R,
+                    cp         = self.cp,
+                    gamma      = self.gamma,
+                )
+                T_n[m], vax_n[m], P_n[m], rho_n[m] = sol
 
-        def jacobian(x):
-            T, vax, P, rho = x
-            J = np.zeros((4,4))
-            J[0,0] = -0.5 * self.cp * self.Y2[n]
-            J[0,1] = -0.5 * vax * self.Y2[n]
-            J[0,2] = 0
-            J[0,3] = 0
+            new_state = State(n, self.M, self.rm[n], self.rp[n],
+                              T_n, P_n, vax_n, rho_n, vt_n)
+            self.states.append(new_state)
 
-            J[1,0] = -self.P[n-1] * self.eta[n] * self.gamma / ((self.gamma - 1) * self.T[n-1]) \
-                     * (1 + self.eta[n] * (T - self.T[n-1]) / self.T[n-1])**(1/(self.gamma - 1))
-            J[1,1] = 0
-            J[1,2] = 1
-            J[1,3] = 0
+            s = new_state.summary()
+            self._log(f"  Stage {n}: P_avg={s['P_avg [Pa]']/1e3:.3f} kPa  "
+                      f"T_avg={s['T_avg [K]']:.2f} K  "
+                      f"vax_avg={s['vax_avg']:.2f} m/s")
 
-            J[2,0] = P / (self.R * T**2)
-            J[2,1] = 0
-            J[2,2] = -1 / (self.R * T)
-            J[2,3] = 1
+        self._log("Done.")
+        return self.states
 
-            J[3,0] = 0
-            J[3,1] = rho
-            J[3,2] = 0
-            J[3,3] = vax
-            return J
+    # ── Convenience: pressure ratio and temperature ratio ─────────────────────
 
-        solver = NewtonRaphsonSolver(residual, jacobian,
-                                     max_iter=self.MAX_ITER,
-                                     tol=self.TOL,
-                                     alpha=self.ALPHA,
-                                     verbose=False)
-        x0 = np.array([self.T[n-1], self.vax[n-1], self.P[n-1], self.rho[n-1]])
-        sol = solver.solve(x0)
-        return sol
-
-    def reset(self):
-        """Reset solver state to initial conditions."""
-        self.T[:] = 0
-        self.vax[:] = 0
-        self.P[:] = 0
-        self.rho[:] = 0
-        self.Psi[:] = 0
-        self.Xi[:] = 0
-
-    def __repr__(self):
-        return f"MultistageFanSolver(N={self.N}, stages={self.direction[1:].tolist()})"
+    def performance(self):
+        """Return area-averaged PR and TR relative to inlet."""
+        inlet = self.states[0]
+        exit  = self.states[-1]
+        PR = exit.P_avg / inlet.P_avg
+        TR = exit.T_avg / inlet.T_avg
+        return {"PR": PR, "TR": TR,
+                "eta_isen": (PR**((self.gamma-1)/self.gamma) - 1) / (TR - 1)}

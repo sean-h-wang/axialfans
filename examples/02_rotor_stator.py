@@ -1,5 +1,5 @@
 """Rotor-stator pair."""
-from axialfans.fan_solver import MultistageFanSolver
+from archive.old_fan_solver import MultistageFanSolver
 
 # Fan with straightening vanes
 solver = MultistageFanSolver(

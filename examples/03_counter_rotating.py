@@ -1,5 +1,5 @@
 """Counter-rotating fans (reduced exit swirl, high compression)."""
-from axialfans.fan_solver import MultistageFanSolver
+from archive.old_fan_solver import MultistageFanSolver
 import numpy as np
 
 # Two rotors spinning opposite directions

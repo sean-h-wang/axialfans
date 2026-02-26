@@ -1,5 +1,5 @@
 """Single rotor (basic fan) example."""
-from axialfans.fan_solver import MultistageFanSolver
+from archive.old_fan_solver import MultistageFanSolver
 
 # Simple axial fan
 solver = MultistageFanSolver(
