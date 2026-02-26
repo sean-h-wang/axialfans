@@ -1,52 +1,49 @@
-"""Monte Carlo uncertainty quantification example."""
+# ═══════════════════════════════════════════════════════════
+# Example 6 — Monte Carlo UQ
+# ═══════════════════════════════════════════════════════════
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from axialfans.fan_solver import State, MultistageFanSolver
+
 import numpy as np
-from archive.old_fan_solver import MultistageFanSolver
 import time
+from scipy.stats import qmc
 
-
-# Nominal configuration
+M    = 25
+T0   = 288.15; P0 = 101325.0; rho0 = P0 / (287.05 * T0)
+R    = 287.05; cp = 1004.7; gamma = 1.4
+vax0 = 50.0
 N_samples = 1000
 
-# Parameter distributions
-beta_samples = np.random.normal(45, 5, N_samples)  # Mean 45°, std 5°
-sigma_samples = np.random.uniform(0.85, 0.95, N_samples)
+sampler = qmc.LatinHypercube(d=2, seed=42)
+sample  = qmc.scale(sampler.random(N_samples), [35, 0.85], [55, 0.95])
+beta_samples  = sample[:, 0]
+sigma_samples = sample[:, 1]
 
-results = []
-failed = 0
-
-print(f"Running {N_samples} Monte Carlo samples...")
-start_time = time.time()
+results = []; failed = 0
+start = time.time()
 
 for i in range(N_samples):
     try:
-        solver = MultistageFanSolver(
-            N=1,
-            direction=[1],
-            sigma=sigma_samples[i],
-            omega=1800,
-            beta=beta_samples[i],
-            rp=0.25,
-            rm=0.18,
-            eta=0.85,
-            R=287,
-            cp=1005
+        s = MultistageFanSolver(
+            N=1, M=M, direction=[1],
+            sigma=sigma_samples[i], omega=1800, beta=beta_samples[i],
+            rp=0.25, rm=0.18, eta=0.85,
+            R=R, cp=cp, gamma=gamma
         )
-        solver.solve(T0=288, vax0=50, P0=101325, rho0=1.225, verbose=False)
-        results.append(solver.P[1] / solver.P[0])
-    except:
+        inlet = State(0, M, 0.18, 0.25, T0, P0, vax0, rho0, 0)
+        s.solve(inlet)
+        results.append(s.performance()['PR'])
+    except Exception:
         failed += 1
 
-elapsed = time.time() - start_time
-
-# Statistics
+elapsed = time.time() - start
 results = np.array(results)
-print(f"\n{'='*60}")
-print(f"Completed in {elapsed:.2f} seconds")
-print(f"Solve rate: {len(results)/elapsed:.0f} solves/second")
-print(f"Success rate: {len(results)}/{N_samples} ({100*len(results)/N_samples:.1f}%)")
-print(f"\nPRESSURE RATIO STATISTICS:")
-print(f"Mean: {np.mean(results):.3f}")
-print(f"Std Dev: {np.std(results):.3f}")
-print(f"95% CI: [{np.percentile(results, 2.5):.3f}, {np.percentile(results, 97.5):.3f}]")
-print(f"Min: {np.min(results):.3f}")
-print(f"Max: {np.max(results):.3f}")
+print("Example 6 — Monte Carlo UQ")
+print("=" * 40)
+print(f"Samples:  {len(results)} / {N_samples}  ({failed} failed)")
+print(f"Time:     {elapsed:.2f} s  ({len(results)/elapsed:.0f} solves/s)")
+print(f"PR mean:  {np.mean(results):.3f}")
+print(f"PR std:   {np.std(results):.3f}")
+print(f"95% CI:   [{np.percentile(results, 2.5):.3f}, {np.percentile(results, 97.5):.3f}]")

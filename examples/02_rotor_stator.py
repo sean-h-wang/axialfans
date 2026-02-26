@@ -1,27 +1,29 @@
-"""Rotor-stator pair."""
-from archive.old_fan_solver import MultistageFanSolver
+# ═══════════════════════════════════════════════════════════
+# Example 2 — Rotor-stator pair
+# ═══════════════════════════════════════════════════════════
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from axialfans.fan_solver import State, MultistageFanSolver
 
-# Fan with straightening vanes
+import numpy as np
+M    = 25
+T0   = 288.15; P0 = 101325.0; rho0 = P0 / (287.05 * T0)
+R    = 287.05; cp = 1004.7; gamma = 1.4
+vax0 = 17.8
+
 solver = MultistageFanSolver(
-    N=2,
-    direction=[1, -1],      # Rotor CCW, stator in mirror frame
-    sigma=[0.85, 0.90],
-    omega=[1800, 0],        # Stator has zero rotation
-    beta=[65, 20],          # Steep rotor, shallow stator
-    rp=0.2667,
-    rm=0.18415,
-    eta=0.877,
-    R=287.053,
-    cp=1005
+    N=2, M=M, direction=[1, -1],
+    sigma=[0.85, 0.90], omega=[1800, 0], beta=[65, 20],
+    rp=0.2667, rm=0.18415, eta=0.877,
+    R=R, cp=cp, gamma=gamma
 )
-
-solver.solve(T0=288.15, vax0=17.8, P0=101325, rho0=1.229, verbose=True)
-
-# Results
-print("\n" + "="*60)
-print("PERFORMANCE BREAKDOWN:")
-print(f"Overall pressure ratio: {solver.P[2]/solver.P[0]:.3f}")
-print(f"Rotor pressure ratio: {solver.P[1]/solver.P[0]:.3f}")
-print(f"Stator pressure ratio: {solver.P[2]/solver.P[1]:.3f}")
-print(f"\nOverall temperature ratio: {solver.T[2]/solver.T[0]:.3f}")
-print(f"Exit velocity: {solver.vax[2]:.2f} m/s")
+inlet = State(0, M, 0.18415, 0.2667, T0, P0, vax0, rho0, 0)
+solver.solve(inlet)
+perf = solver.performance()
+print("Example 2 — Rotor-stator pair")
+print("=" * 40)
+print(f"Overall PR:  {perf['PR']:.3f}")
+print(f"Rotor PR:    {solver.states[1].P_avg / solver.states[0].P_avg:.3f}")
+print(f"Stator PR:   {solver.states[2].P_avg / solver.states[1].P_avg:.3f}")
+print(f"TR:          {perf['TR']:.3f}")

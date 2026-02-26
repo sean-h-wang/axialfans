@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "axialfans"
-version = "1.0.2"
-description = "Analytical solver for multistage ducted axial fans."
+version = "2.0.0"
+description = "Spanwise-resolved analytical solver for multistage axial turbomachinery."
 authors = [
   { name = "Sean H. Wang", email = "seanwangpiano@gmail.com" }
 ]

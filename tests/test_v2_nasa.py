@@ -9,11 +9,10 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
+from axialfans.fan_solver import State, MultistageFanSolver
 
 import numpy as np
 import traceback
-from axialfans.fan_solver import State, MultistageFanSolver
 
 # ── Qiu et al. (2007) slip factor model ───────────────────────────────────────
 # Fig 5C solid line, linear fit to pink endpoints:

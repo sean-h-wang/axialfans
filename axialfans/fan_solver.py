@@ -33,6 +33,11 @@ GAMMA_DEFAULT = 1.4
 R_DEFAULT     = 287.05   # J/(kg·K)
 CP_DEFAULT    = GAMMA_DEFAULT * R_DEFAULT / (GAMMA_DEFAULT - 1)  # ~1004.7
 
+# ── Solver constants (module-level, user-tunable) ─────────────────────────────
+MAX_ITER = 1000
+TOL      = 1e-8
+ALPHA    = 0.5
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  STATE
@@ -121,7 +126,7 @@ class State:
 
 def _solve_radial_station(r, work_local, vt_exit, vt_in,
                       T_prev, P_prev, vax_prev, rho_prev,
-                      eta, Rgas, cp, gamma, max_iter=1000):
+                      eta, Rgas, cp, gamma):
     """
     Solve 4 equations at a single radial station r using NewtonRaphsonSolver.
 
@@ -166,7 +171,7 @@ def _solve_radial_station(r, work_local, vt_exit, vt_in,
     rho0 = P0 / (Rgas * T0)
     vax0 = (rho_prev * vax_prev / rho0) if abs(rho_prev * vax_prev) > 1e-12 else vax_prev
 
-    solver = NewtonRaphsonSolver(residual, jacobian, max_iter=max_iter, tol=1e-8)
+    solver = NewtonRaphsonSolver(residual, jacobian, max_iter=MAX_ITER, tol=TOL, alpha=ALPHA, verbose=False)
     return solver.solve(np.array([T0, vax0, P0, rho0]))
 
 

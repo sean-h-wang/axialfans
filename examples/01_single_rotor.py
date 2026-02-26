@@ -1,26 +1,33 @@
-"""Single rotor (basic fan) example."""
-from archive.old_fan_solver import MultistageFanSolver
+# ═══════════════════════════════════════════════════════════
+# Example 1 — Single rotor
+# ═══════════════════════════════════════════════════════════
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from axialfans.fan_solver import State, MultistageFanSolver
 
-# Simple axial fan
+import numpy as np
+import axialfans.fan_solver as solver_module
+solver_module.MAX_ITER = 1000
+solver_module.TOL      = 1e-8
+solver_module.ALPHA    = 1.0
+
+M    = 25
+T0   = 288.15; P0 = 101325.0; rho0 = P0 / (287.05 * T0)
+R    = 287.05; cp = 1004.7; gamma = 1.4
+vax0 = 50.0
+
 solver = MultistageFanSolver(
-    N=1,
-    direction=[1],      # Counter-clockwise
-    sigma=0.9,
-    omega=1800,         # 1800 rad/s
-    beta=45,            # 45° blade angle
-    rp=0.25,
-    rm=0.18,
-    eta=0.85,
-    R=287,
-    cp=1005
+    N=1, M=M, direction=[1],
+    sigma=0.9, omega=1800, beta=45,
+    rp=0.25, rm=0.18, eta=0.85,
+    R=R, cp=cp, gamma=gamma
 )
-
-solver.solve(T0=288, vax0=50, P0=101325, rho0=1.225, verbose=True)
-
-# Extract results
-print("\n" + "="*60)
-print("RESULTS:")
-print(f"Pressure ratio: {solver.P[1]/solver.P[0]:.3f}")
-print(f"Temperature ratio: {solver.T[1]/solver.T[0]:.3f}")
-print(f"Exit velocity: {solver.vax[1]:.2f} m/s")
-print(f"Exit density: {solver.rho[1]:.4f} kg/m³")
+inlet = State(0, M, 0.18, 0.25, T0, P0, vax0, rho0, 0)
+solver.solve(inlet)
+perf = solver.performance()
+print("Example 1 — Single rotor")
+print("=" * 40)
+print(f"PR:  {perf['PR']:.3f}")
+print(f"TR:  {perf['TR']:.3f}")
+print(f"eta: {perf['eta_isen']:.3f}")

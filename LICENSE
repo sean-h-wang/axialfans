@@ -1,6 +1,6 @@
-MIT License with Explicit Attribution Requirement
+MIT License
 
-Copyright (c) 2026 Sean  H. Wang
+Copyright (c) 2026 Sean H. Wang
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -8,19 +8,27 @@ in the Software without restriction, including without limitation the rights
 to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 copies of the Software, subject to the following conditions:
 
-1. **Attribution Required**: The above copyright notice, this permission notice, 
-   and this explicit attribution requirement must be included in all copies or 
-   substantial portions of the Software. Users may not claim authorship of the 
-   Software or any derivative works, or represent it as their original creation.
+1. ATTRIBUTION. The above copyright notice, this permission notice, and this
+   attribution clause shall be included in all copies or substantial portions
+   of the Software. You shall not claim authorship of the Software or any
+   derivative work thereof, nor represent the Software or any derivative work
+   as your original creation.
 
-2. **No False Claims**: You may not misrepresent the source of the Software. 
-   Any modifications must be clearly marked as modified and not presented as 
-   the original work of Sean Wang.
+2. NO MISREPRESENTATION. You shall not misrepresent the origin of the Software.
+   Any modification to the Software must be clearly identified as such and must
+   not be presented as the original work of Sean H. Wang.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER 
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+3. NO WARRANTY; LIMITATION OF LIABILITY. THE SOFTWARE IS PROVIDED "AS IS",
+   WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+   TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+   NONINFRINGEMENT. THIS SOFTWARE IS A PRELIMINARY DESIGN AID INTENDED FOR
+   RESEARCH AND EXPLORATORY PURPOSES ONLY. IT IS NOT VALIDATED FOR USE IN
+   SAFETY-CRITICAL APPLICATIONS, CERTIFIED ENGINEERING DESIGN, OR ANY
+   APPLICATION WHERE FAILURE COULD RESULT IN PERSONAL INJURY, DEATH, OR
+   PROPERTY DAMAGE. THE USER ASSUMES ALL RESPONSIBILITY FOR VERIFYING OUTPUTS
+   INDEPENDENTLY BEFORE ANY ENGINEERING APPLICATION. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING
+   FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE, INCLUDING ANY PHYSICAL, MECHANICAL, OR SAFETY
+   CONSEQUENCES ARISING FROM RELIANCE ON SOLVER OUTPUTS.
